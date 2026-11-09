@@ -1,15 +1,4 @@
 import fs from 'fs';
-import {
-  BZZOIRO_BASE_URL,
-  BZZOIRO_CLUB_POOL,
-  getBzzoiroPlayerImageUrl,
-  getBzzoiroTeamLogoUrl,
-  resolveBzzoiroPlayerImageUrl,
-} from '../src/data/bzzoiroSports';
-import {
-  getAutomaticContentItem,
-  AUTOMATIC_CONTENT_ITEMS,
-} from '../src/data/automaticContentPool';
 
 type TeamId = 'red' | 'blue';
 type EmojiId =
@@ -38,7 +27,6 @@ interface ContentItem {
   title: string;
   prompt: string;
   answer: string;
-  options?: string[];
   mediaUrl?: string;
   blurAmount?: number;
   createdAt: string;
@@ -61,16 +49,12 @@ interface TicTacToeClub {
   id: string;
   name: string;
   shortName: string;
-  bzzoiroTeamId?: number;
-  logoUrl?: string;
 }
 
 interface TicTacToeNation {
   id: string;
   name: string;
   code: string;
-  bzzoiroTeamId?: number;
-  logoUrl?: string;
 }
 
 interface TicTacToeCell {
@@ -79,7 +63,6 @@ interface TicTacToeCell {
   col: number;
   owner: TeamId | null;
   playerName: string | null;
-  playerImageUrl?: string | null;
 }
 
 interface TicTacToeState {
@@ -110,7 +93,6 @@ interface ActiveMiniGameState {
     title: string;
     prompt: string;
     answer?: string;
-    options?: string[];
     mediaUrl?: string;
     blurAmount?: number;
   } | null;
@@ -141,8 +123,6 @@ interface GameSessionState {
   boardDeckId?: number;
   cards: BoardCard[];
   activeMiniGame: ActiveMiniGameState | null;
-  usedItemIds?: string[];
-  autoSelectionEnabled?: boolean;
   updatedAt: number;
 }
 
@@ -177,7 +157,18 @@ const MINI_GAME_CATEGORIES: {
 
 const DB_FILE = '/tmp/fanzone-vercel-db.json';
 
-const CLUB_POOL: TicTacToeClub[] = BZZOIRO_CLUB_POOL;
+const CLUB_POOL: TicTacToeClub[] = [
+  { id: 'real_madrid', name: 'Real Madrid', shortName: 'RMA' },
+  { id: 'barcelona', name: 'FC Barcelona', shortName: 'BAR' },
+  { id: 'man_city', name: 'Manchester City', shortName: 'MCI' },
+  { id: 'psg', name: 'Paris Saint-Germain', shortName: 'PSG' },
+  { id: 'chelsea', name: 'Chelsea FC', shortName: 'CHE' },
+  { id: 'ac_milan', name: 'AC Milan', shortName: 'MIL' },
+  { id: 'man_united', name: 'Manchester United', shortName: 'MUN' },
+  { id: 'juventus', name: 'Juventus FC', shortName: 'JUV' },
+  { id: 'bayern', name: 'Bayern Munich', shortName: 'BAY' },
+  { id: 'inter_milan', name: 'Inter Milan', shortName: 'INT' },
+];
 
 const CLUB_IDS = new Set(CLUB_POOL.map((c) => c.id));
 
@@ -251,8 +242,6 @@ function createFreshTicTacToeState(startingTeam: TeamId = 'red'): TicTacToeState
     id: c.id,
     name: c.name,
     code: c.shortName,
-    bzzoiroTeamId: c.bzzoiroTeamId,
-    logoUrl: c.logoUrl,
   }));
   const cells: TicTacToeCell[] = [];
   const hintsByCell: Record<number, string[]> = {};
@@ -410,7 +399,7 @@ function getDb(): ServerlessDB {
       boardDeckId: 1,
       cards: createShuffledCards(),
       activeMiniGame: null,
-      updatedAt: Date.now(),
+      updatedAt: 0,
     },
     contentItems: createDefaultContentItems(),
     timerStartedAt: null,
@@ -568,66 +557,13 @@ export default async function handler(req: any, res: any) {
     ? parsedUrl.pathname
     : `/api/${parsedUrl.pathname.replace(/^\/+/, '')}`;
 
-  // 0. GET /api/bzzoiro/search
-  if (method === 'GET' && routePath === '/api/bzzoiro/search') {
-    const q = (parsedUrl.searchParams.get('q') || '').trim();
-    const filterType = parsedUrl.searchParams.get('type') || undefined;
-    if (q.length < 2) {
-      return sendJson(res, 200, { results: [] });
-    }
-    try {
-      const bzzoiroRes = await fetch(
-        `${BZZOIRO_BASE_URL}/search/?q=${encodeURIComponent(q)}`,
-        {
-          headers: { Accept: 'application/json' },
-        }
-      );
-      if (!bzzoiroRes.ok) {
-        return sendJson(res, 200, { results: [] });
-      }
-      const data: any = await bzzoiroRes.json();
-      const rawResults = Array.isArray(data.results) ? data.results : [];
-      const results = rawResults
-        .filter(
-          (r: any) =>
-            r.sport === 'football' &&
-            (r.type === 'player' || r.type === 'team') &&
-            (!filterType || r.type === filterType)
-        )
-        .map((r: any) => {
-          const idMatch = String(r.img || r.url || '').match(/\/(\d+)\//);
-          const numericId = idMatch ? Number(idMatch[1]) : 0;
-          const isPlayer = r.type === 'player';
-          return {
-            id: numericId,
-            type: isPlayer ? 'player' : 'team',
-            name: String(r.name || ''),
-            extra: String(r.extra || ''),
-            imageUrl: numericId
-              ? isPlayer
-                ? getBzzoiroPlayerImageUrl(numericId, true)
-                : getBzzoiroTeamLogoUrl(numericId, true)
-              : `${BZZOIRO_BASE_URL}${r.img}`,
-            fallbackImageUrl: numericId
-              ? isPlayer
-                ? getBzzoiroPlayerImageUrl(numericId, false)
-                : getBzzoiroTeamLogoUrl(numericId, false)
-              : `${BZZOIRO_BASE_URL}${r.img}`,
-          };
-        });
-      return sendJson(res, 200, { results });
-    } catch {
-      return sendJson(res, 200, { results: [] });
-    }
-  }
-
   // 1. GET /api/studio/state
   if (method === 'GET' && routePath === '/api/studio/state') {
     const db = getDb();
     const sinceParam = Number(parsedUrl.searchParams.get('since') || 0);
     const serverUpdatedAt = db.session.updatedAt || 0;
     const timerActive = Boolean(db.session.activeMiniGame?.timerRunning);
-    if (sinceParam > 0 && !timerActive && serverUpdatedAt === sinceParam) {
+    if (sinceParam > 0 && !timerActive && (serverUpdatedAt === 0 || serverUpdatedAt <= sinceParam)) {
       return sendJson(res, 200, { unchanged: true, updatedAt: serverUpdatedAt });
     }
     return sendJson(res, 200, {
@@ -800,42 +736,32 @@ export default async function handler(req: any, res: any) {
             ticTacToe: createFreshTicTacToeState(session.activeTeam),
           };
         } else {
-          if (!Array.isArray(session.usedItemIds)) {
-            session.usedItemIds = [];
-          }
-          if (session.autoSelectionEnabled === undefined) {
-            session.autoSelectionEnabled = true;
-          }
-
           const categoryItems = db.contentItems.filter((item) => item.category === card.category);
-          let chosen: ContentItem | undefined;
-
-          if (payload.itemId && payload.itemId !== 'auto') {
-            chosen = categoryItems.find((i) => i.id === payload.itemId);
-          }
-
-          if (!chosen) {
-            chosen = getAutomaticContentItem(card.category, categoryItems, session.usedItemIds);
-          }
-
-          if (chosen && chosen.id && !session.usedItemIds.includes(chosen.id)) {
-            session.usedItemIds.push(chosen.id);
-          }
-
+          const chosen =
+            (payload.itemId && categoryItems.find((i) => i.id === payload.itemId)) ||
+            categoryItems[0];
           session.activeMiniGame = {
             cardNumber: card.cardNumber,
             category: card.category,
             categoryTitle: card.categoryTitle,
-            snapshot: {
-              itemId: chosen.id,
-              category: chosen.category,
-              title: chosen.title,
-              prompt: chosen.prompt,
-              answer: chosen.answer,
-              options: Array.isArray(chosen.options) ? [...chosen.options] : undefined,
-              mediaUrl: chosen.mediaUrl,
-              blurAmount: typeof chosen.blurAmount === 'number' ? chosen.blurAmount : 28,
-            },
+            snapshot: chosen
+              ? {
+                  itemId: chosen.id,
+                  category: chosen.category,
+                  title: chosen.title,
+                  prompt: chosen.prompt,
+                  answer: chosen.answer,
+                  mediaUrl: chosen.mediaUrl,
+                  blurAmount: typeof chosen.blurAmount === 'number' ? chosen.blurAmount : 28,
+                }
+              : {
+                  itemId: 'fallback',
+                  category: card.category as ContentCategory,
+                  title: card.categoryTitle,
+                  prompt: `Identify this ${card.categoryTitle}!`,
+                  answer: 'Official Answer',
+                  blurAmount: 28,
+                },
             timerSeconds: 30,
             timerRunning: false,
             answerRevealed: false,
@@ -873,7 +799,6 @@ export default async function handler(req: any, res: any) {
         db.timerStartedAt = null;
         session.boardDeckId = (session.boardDeckId || 1) + 1;
         session.cards = createShuffledCards();
-        session.usedItemIds = [];
         break;
       case 'minigame:useItem': {
         const mg = session.activeMiniGame;
@@ -883,10 +808,6 @@ export default async function handler(req: any, res: any) {
           (payload.itemId && categoryItems.find((i) => i.id === payload.itemId)) ||
           categoryItems[0];
         if (chosen) {
-          if (!Array.isArray(session.usedItemIds)) session.usedItemIds = [];
-          if (chosen.id && !session.usedItemIds.includes(chosen.id)) {
-            session.usedItemIds.push(chosen.id);
-          }
           const customBlur =
             payload.blurAmount !== undefined ? Number(payload.blurAmount) : undefined;
           mg.snapshot = {
@@ -895,11 +816,6 @@ export default async function handler(req: any, res: any) {
             title: payload.title?.trim() || chosen.title,
             prompt: payload.prompt?.trim() || chosen.prompt,
             answer: payload.answer?.trim() || chosen.answer,
-            options: Array.isArray(payload.options)
-              ? payload.options
-              : Array.isArray(chosen.options)
-              ? [...chosen.options]
-              : undefined,
             mediaUrl: chosen.mediaUrl,
             blurAmount:
               customBlur !== undefined && !Number.isNaN(customBlur)
@@ -914,49 +830,6 @@ export default async function handler(req: any, res: any) {
           mg.imageUnblurred = false;
           mg.audioPlaying = false;
         }
-        break;
-      }
-      case 'minigame:autoSelect': {
-        const mg = session.activeMiniGame;
-        if (!mg || mg.category === 'tictactoe') break;
-        if (!Array.isArray(session.usedItemIds)) session.usedItemIds = [];
-        const categoryItems = db.contentItems.filter((item) => item.category === mg.category);
-        const currentId = mg.snapshot?.itemId;
-        const fresh = getAutomaticContentItem(mg.category, categoryItems, session.usedItemIds, currentId);
-        if (fresh) {
-          if (!session.usedItemIds.includes(fresh.id)) {
-            session.usedItemIds.push(fresh.id);
-          }
-          mg.snapshot = {
-            itemId: fresh.id,
-            category: fresh.category,
-            title: fresh.title,
-            prompt: fresh.prompt,
-            answer: fresh.answer,
-            options: Array.isArray(fresh.options) ? [...fresh.options] : undefined,
-            mediaUrl: fresh.mediaUrl,
-            blurAmount: typeof fresh.blurAmount === 'number' ? fresh.blurAmount : 28,
-          };
-          mg.timerSeconds = 30;
-          mg.timerRunning = false;
-          db.timerStartedAt = null;
-          db.timerInitialSeconds = 30;
-          mg.answerRevealed = false;
-          mg.imageUnblurred = false;
-          mg.audioPlaying = false;
-          mg.scored = false;
-          mg.scoreResult = 'pending';
-          mg.awardedTeam = null;
-        }
-        break;
-      }
-      case 'session:toggleAutoSelection': {
-        session.autoSelectionEnabled =
-          payload.enabled !== undefined ? Boolean(payload.enabled) : !session.autoSelectionEnabled;
-        break;
-      }
-      case 'session:resetUsedItems': {
-        session.usedItemIds = [];
         break;
       }
       case 'minigame:setBlur': {
@@ -1076,9 +949,6 @@ export default async function handler(req: any, res: any) {
           if (!playerName) break;
           cell.owner = currentTeam;
           cell.playerName = playerName;
-          cell.playerImageUrl =
-            (payload.playerImageUrl ? String(payload.playerImageUrl) : null) ||
-            resolveBzzoiroPlayerImageUrl(playerName);
           ttt.rejectedFeedback = null;
           const outcome = evaluateTicTacToeBoard(ttt);
           if (outcome.winner) {
@@ -1147,7 +1017,7 @@ export default async function handler(req: any, res: any) {
     if (!isAuthorizedRequest(req)) return sendJson(res, 401, { error: 'Unauthorized' });
     const body = await parseJsonBody(req);
     const db = getDb();
-    const { category, title, prompt, answer, mediaUrl, blurAmount, options } = body || {};
+    const { category, title, prompt, answer, mediaUrl, blurAmount } = body || {};
     if (!category || !answer) {
       return sendJson(res, 400, { error: 'Category and answer are required' });
     }
@@ -1161,7 +1031,6 @@ export default async function handler(req: any, res: any) {
       title: String(title || prompt || 'Broadcast Item').trim(),
       prompt: String(prompt || title || 'Identify this football clue!').trim(),
       answer: String(answer).trim(),
-      options: Array.isArray(options) && options.length > 0 ? options.map(String) : undefined,
       mediaUrl: mediaUrl ? String(mediaUrl).trim() : undefined,
       blurAmount: parsedBlur,
       createdAt: new Date().toISOString(),
@@ -1182,7 +1051,7 @@ export default async function handler(req: any, res: any) {
       const idx = db.contentItems.findIndex((i) => i.id === id);
       if (idx === -1) return sendJson(res, 404, { error: 'Not found' });
       const existing = db.contentItems[idx];
-      const { title, prompt, answer, mediaUrl, blurAmount, options } = body || {};
+      const { title, prompt, answer, mediaUrl, blurAmount } = body || {};
       const parsedBlur =
         blurAmount !== undefined && !Number.isNaN(Number(blurAmount))
           ? Math.max(0, Math.min(60, Number(blurAmount)))
@@ -1192,7 +1061,6 @@ export default async function handler(req: any, res: any) {
         title: title !== undefined ? String(title).trim() : existing.title,
         prompt: prompt !== undefined ? String(prompt).trim() : existing.prompt,
         answer: answer !== undefined ? String(answer).trim() : existing.answer,
-        options: Array.isArray(options) ? options.map(String) : existing.options,
         mediaUrl:
           mediaUrl !== undefined
             ? mediaUrl
